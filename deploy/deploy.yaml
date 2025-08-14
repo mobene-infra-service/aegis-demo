@@ -24,45 +24,36 @@ spec:
           ports:
             - containerPort: 80
           resources:
-            limits:                   #资源限制
+            limits:                   
               cpu: ${LIMITS_CPU}
               memory: ${LIMITS_MEMORY}
-            requests:                 #资源需求
+            requests:                 
               cpu: ${REQUETS_CPU}
               memory: ${REQUETS_MEMORY}
-          livenessProbe:              #存活性探针，用于判断容器是不是健康
-            failureThreshold: 3       #检测失败几次表示味就绪
-            initialDelaySeconds: 45   #延迟加载时间
-            periodSeconds: 10         #重试时间间隔
-            successThreshold: 1       #检查成功几次表示就绪
-            timeoutSeconds: 3         #超时时间设置
+          startupProbe:
             httpGet:
-              path: /state/up
-              port: 80
-              scheme: HTTP
-          readinessProbe:             #就绪性探针，用于判断容器内的程序是否存活
-            failureThreshold: 3
+              path: /health/started
+              port: 9000
+            periodSeconds: 1
+            failureThreshold: 600              
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 9000
             periodSeconds: 10
-            initialDelaySeconds: 45
-            successThreshold: 1
-            timeoutSeconds: 3
+            failureThreshold: 3              
+          livenessProbe:
             httpGet:
-              path: /state/up
-              port: 80
-              scheme: HTTP
-          startupProbe:               #启动容器首先执行这个探针，一般用于服务启动时间过长，防止被其他探针意外杀死
-            failureThreshold: 3
-            initialDelaySeconds: 45
-            periodSeconds: 5
-            timeoutSeconds: 3
-            tcpSocket:
-              port: 80
+              path: /health/live
+              port: 9000
+            periodSeconds: 10
+            failureThreshold: 3   
           envFrom:
-            - secretRef:
-                name: ${PROJECT}-secret
+            - configMapRef:
+                name: aegis-demo
           env:
             - name: MODE
-              value: ${MODE} 
+              value: ${MODE}
       restartPolicy: Always
 
 ---
@@ -80,7 +71,7 @@ spec:
     - name: http
       protocol: TCP
       port: 80                    #svc端口
-      targetPort: 80              # pod端口
+      targetPort: 80            # pod端口
   type: ClusterIP
 
 ---
@@ -90,9 +81,9 @@ metadata:
   name: ${APP}-ingress
   namespace: ${PROJECT}
 spec:
-  ingressClassName: nginx-int
+  ingressClassName: nginx
   rules:
-  - host: ${APP}.int-ack-${MODE}.miraflow.io
+  - host: sso-demo.jinguobyte.com
     http:
       paths:
       - backend:
