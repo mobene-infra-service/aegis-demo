@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 
 /**
@@ -233,7 +234,28 @@ public class HomeController {
     // =========================== 登出功能 ===========================
     
     /**
-     * 处理登出请求
+     * 处理 GET 登出请求 - 显示登出确认页面
+     * 
+     * @param model Thymeleaf 模型对象
+     * @return 登出确认页面视图
+     */
+    @GetMapping("/logout")
+    public String showLogout(Model model) {
+        logger.info("显示登出确认页面");
+        
+        // 添加用户信息到模型（如果已登录）
+        if (currentUser != null) {
+            model.addAttribute("username", currentUser.getPreferredUsername());
+            model.addAttribute("isLoggedIn", true);
+        } else {
+            model.addAttribute("isLoggedIn", false);
+        }
+        
+        return "logout";
+    }
+    
+    /**
+     * 处理 POST 登出请求 - 执行实际登出操作
      * 
      * 实现单点登出功能：
      * 1. 清除本地用户会话
@@ -243,8 +265,10 @@ public class HomeController {
      * 
      * @return 重定向到 Keycloak 登出端点
      */
-    @GetMapping("/logout")
+    @PostMapping("/logout")
     public String logout() {
+        UserInfo userToLogout = currentUser; // 保存用户信息用于生成登出URL
+        
         if (currentUser != null) {
             logger.info("用户登出: {}", currentUser.getPreferredUsername());
             currentUser = null;  // 清除本地会话
@@ -253,8 +277,8 @@ public class HomeController {
         }
         
         try {
-            // 生成 Keycloak 单点登出 URL
-            String logoutUrl = oauth2Service.generateLogoutUrl();
+            // 生成 Keycloak 单点登出 URL，包含 id_token_hint 参数
+            String logoutUrl = oauth2Service.generateLogoutUrl(userToLogout);
             
             logger.info("重定向到 Keycloak 进行单点登出");
             return "redirect:" + logoutUrl;

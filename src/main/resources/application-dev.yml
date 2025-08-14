@@ -1,6 +1,16 @@
 server:
   port: 8282
 
+keycloak:
+  # Keycloak 服务器基础 URL
+  server:
+    url: http://127.0.0.1:8180
+  # Realm 名称
+  realm: demo
+  client:
+    id: aegis-demo
+    secret: qAFHEE7R2q5U6IXlV4DVFTpq7gYzeDhh
+
 app:
   base:
     url: http://127.0.0.1:8282

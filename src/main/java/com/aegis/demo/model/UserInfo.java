@@ -128,6 +128,12 @@ public class UserInfo {
     // =========================== 扩展信息 ===========================
     
     /**
+     * 原始 ID Token 字符串
+     * 用于单点登出时作为 id_token_hint 参数
+     */
+    private String idToken;
+    
+    /**
      * 所有原始声明数据
      * 存储从令牌中解析出的所有声明，便于调试和扩展
      */
@@ -347,6 +353,14 @@ public class UserInfo {
     
     public void setRealmAccess(Map<String, Object> realmAccess) {
         this.realmAccess = realmAccess;
+    }
+    
+    public String getIdToken() {
+        return idToken;
+    }
+    
+    public void setIdToken(String idToken) {
+        this.idToken = idToken;
     }
     
     public Map<String, Object> getAllClaims() {

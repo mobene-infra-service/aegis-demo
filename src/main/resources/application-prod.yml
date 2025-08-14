@@ -1,0 +1,17 @@
+# 自定义 Keycloak 配置
+# 这些配置将被我们的 KeycloakConfig 类读取
+keycloak:
+  # Keycloak 服务器基础 URL
+  server:
+    url: https://sso-auth.jinguobyte.com
+  # Realm 名称
+  realm: jingle
+  # OAuth2 客户端配置
+  client:
+    id: aegis-demo
+    secret: ${KEYCLOAK_CLIENT_SECRET:change-me}
+
+# 应用程序基础配置
+app:
+  base:
+    url: https://sso-demo.jinguobyte.com

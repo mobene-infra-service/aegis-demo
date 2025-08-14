@@ -172,16 +172,42 @@ public class OAuth2Service {
             formData.add("redirect_uri", keycloakConfig.getRedirectUri()); // 必须与授权请求中的一致
             formData.add("code_verifier", codeVerifier);                // PKCE 验证参数
             
-            logger.debug("准备发送令牌请求到: {}", keycloakConfig.getTokenUrl());
+            logger.info("准备发送令牌请求到: {}", keycloakConfig.getTokenUrl());
+            logger.debug("令牌请求参数: client_id={}, redirect_uri={}", 
+                        keycloakConfig.getClientId(), keycloakConfig.getRedirectUri());
+            logger.debug("Client Secret 长度: {}", keycloakConfig.getClientSecret().length());
             
             // 第三步：发送 HTTP POST 请求到 Keycloak 令牌端点
-            String response = webClient.post()
-                    .uri(keycloakConfig.getTokenUrl())
-                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_FORM_URLENCODED_VALUE)
-                    .body(BodyInserters.fromFormData(formData))
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .block();
+            String response;
+            try {
+                response = webClient.post()
+                        .uri(keycloakConfig.getTokenUrl())
+                        .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+                        .body(BodyInserters.fromFormData(formData))
+                        .retrieve()
+                        .onStatus(
+                            status -> status.is4xxClientError() || status.is5xxServerError(),
+                            clientResponse -> {
+                                logger.error("令牌请求失败 - HTTP状态码: {}", clientResponse.statusCode());
+                                return clientResponse.bodyToMono(String.class)
+                                    .doOnNext(errorBody -> {
+                                        logger.error("错误响应内容: {}", errorBody);
+                                        logger.error("请检查以下配置:");
+                                        logger.error("1. Client ID: {}", keycloakConfig.getClientId());
+                                        logger.error("2. Client Secret 是否正确");
+                                        logger.error("3. Redirect URI: {}", keycloakConfig.getRedirectUri());
+                                        logger.error("4. Keycloak 服务器地址: {}", keycloakConfig.getServerUrl());
+                                        logger.error("5. Realm 名称: {}", keycloakConfig.getRealm());
+                                    })
+                                    .map(errorBody -> new RuntimeException("令牌请求失败: " + errorBody));
+                            }
+                        )
+                        .bodyToMono(String.class)
+                        .block();
+            } catch (org.springframework.web.reactive.function.client.WebClientResponseException e) {
+                logger.error("WebClient 请求异常 - 状态码: {}, 响应体: {}", e.getStatusCode(), e.getResponseBodyAsString());
+                throw new RuntimeException("令牌交换失败: " + e.getMessage() + ", 响应: " + e.getResponseBodyAsString(), e);
+            }
             
             logger.debug("收到令牌响应: {}", response.substring(0, Math.min(200, response.length())) + "...");
             
@@ -260,7 +286,11 @@ public class OAuth2Service {
             
             logger.info("成功解析 ID Token，包含 {} 个声明", claims.size());
             
-            return new UserInfo(claims);
+            // 创建用户信息对象并保存原始 ID Token
+            UserInfo userInfo = new UserInfo(claims);
+            userInfo.setIdToken(idToken); // 保存原始 ID Token 用于登出
+            
+            return userInfo;
             
         } catch (Exception e) {
             logger.error("解析 ID Token 时发生错误", e);
@@ -312,14 +342,24 @@ public class OAuth2Service {
      * 生成单点登出 URL
      * 
      * 单点登出允许用户从所有相关应用程序中登出。
+     * 包含 id_token_hint 参数以指定要登出的用户会话。
      * 
+     * @param userInfo 用户信息（包含 ID Token）
      * @return 登出 URL
      */
-    public String generateLogoutUrl() {
-        String logoutUrl = UriComponentsBuilder.fromHttpUrl(keycloakConfig.getLogoutUrl())
-                .queryParam("post_logout_redirect_uri", keycloakConfig.getPostLogoutRedirectUri())
-                .build()
-                .toUriString();
+    public String generateLogoutUrl(UserInfo userInfo) {
+        UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(keycloakConfig.getLogoutUrl())
+                .queryParam("post_logout_redirect_uri", keycloakConfig.getPostLogoutRedirectUri());
+        
+        // 如果有用户信息且包含 ID Token，则添加 id_token_hint 参数
+        if (userInfo != null && userInfo.getIdToken() != null) {
+            builder.queryParam("id_token_hint", userInfo.getIdToken());
+            logger.debug("添加 id_token_hint 参数到登出 URL");
+        } else {
+            logger.warn("缺少 ID Token，无法添加 id_token_hint 参数");
+        }
+        
+        String logoutUrl = builder.build().toUriString();
         
         logger.info("生成登出 URL: {}", logoutUrl);
         return logoutUrl;

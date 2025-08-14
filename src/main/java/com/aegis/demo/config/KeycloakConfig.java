@@ -16,7 +16,7 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration
 public class KeycloakConfig {
-    
+
     // =========================== 基础配置 ===========================
     
     /**
@@ -30,7 +30,7 @@ public class KeycloakConfig {
      * Keycloak Realm 名称
      * Realm 是 Keycloak 中的顶级管理单元，包含用户、角色、客户端等
      */
-    @Value("${keycloak.realm:aegis-realm}")
+    @Value("${keycloak.realm}")
     private String realm;
     
     /**
