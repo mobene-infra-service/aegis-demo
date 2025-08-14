@@ -1,0 +1,63 @@
+server:
+  port: 80
+  servlet:
+    session:
+      timeout: 30m
+
+spring:
+  application:
+    name: aegis-demo
+  profiles:
+    active: ${MODE:dev}
+  
+  # Thymeleaf 配置
+  thymeleaf:
+    cache: false
+    prefix: classpath:/templates/
+    suffix: .html
+    encoding: UTF-8
+    mode: HTML
+    servlet:
+      content-type: text/html
+
+# 自定义 Keycloak 配置
+# 这些配置将被我们的 KeycloakConfig 类读取
+keycloak:
+  # Keycloak 服务器基础 URL
+  server:
+    url: https://sso-auth.jinguobyte.com
+  # Realm 名称
+  realm: jingle
+  # OAuth2 客户端配置
+  client:
+    id: aegis-demo
+    secret: ${KEYCLOAK_CLIENT_SECRET:change-me}
+
+# 应用程序基础配置
+app:
+  base:
+    url: https://sso-demo.jinguobyte.com
+
+# 日志配置 - 用于调试和学习
+logging:
+  level:
+    # Spring Security 基础日志
+    org.springframework.security: INFO
+    # 我们自定义的代码，设置为 DEBUG 以便观察 OAuth2 流程
+    com.aegis.demo: DEBUG
+    # HTTP 客户端日志（用于观察与 Keycloak 的通信）
+    org.springframework.web.reactive.function.client: DEBUG
+    # 根日志级别
+    root: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+# 管理端点配置（可选）
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
