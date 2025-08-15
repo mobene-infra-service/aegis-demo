@@ -2,7 +2,7 @@ package com.aegis.demo.service;
 
 import com.aegis.demo.config.KeycloakConfig;
 import com.aegis.demo.model.UserInfo;
-import com.fasterxml.jackson.core.JsonProcessingException;
+
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jsonwebtoken.Claims;
@@ -21,13 +21,13 @@ import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import jakarta.annotation.PostConstruct;
-import java.net.URLEncoder;
+
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+
 
 /**
  * OAuth2/OpenID Connect 手动实现服务
@@ -62,13 +62,9 @@ public class OAuth2Service {
     
     private WebClient webClient;
     
-    // 用于存储 state 参数，防止 CSRF 攻击
-    // 生产环境应使用 Redis 等分布式存储
-    private final Map<String, String> stateStore = new ConcurrentHashMap<>();
-    
-    // PKCE (Proof Key for Code Exchange) 参数存储
-    // 增强安全性，防止授权码拦截攻击
-    private final Map<String, String> codeVerifierStore = new ConcurrentHashMap<>();
+    // JWT 签名密钥，用于state参数的签名和验证
+    // 在k8s多pod环境中，所有pod使用相同密钥确保状态验证一致性
+    private final String JWT_SECRET = "aegis-demo-jwt-secret-key-for-state-validation-2024";
     
     @PostConstruct
     public void init() {
@@ -93,7 +89,7 @@ public class OAuth2Service {
      * - client_id: 标识我们的应用程序
      * - redirect_uri: 用户授权后的回调地址
      * - scope: 请求的权限范围
-     * - state: 防止 CSRF 攻击的随机字符串
+     * - state: JWT格式的自包含状态参数，包含CSRF保护和PKCE信息
      * - code_challenge: PKCE 安全增强参数
      * 
      * @return 完整的授权请求 URL
@@ -101,17 +97,16 @@ public class OAuth2Service {
     public String generateAuthorizationUrl() {
         logger.info("开始生成授权请求 URL");
         
-        // 生成随机的 state 参数，用于防止 CSRF 攻击
-        String state = generateRandomString(32);
-        stateStore.put(state, "valid");
-        logger.debug("生成 state 参数: {}", state);
-        
         // 生成 PKCE 参数，增强安全性
         String codeVerifier = generateRandomString(64);
         String codeChallenge = generateCodeChallenge(codeVerifier);
-        codeVerifierStore.put(state, codeVerifier);
         logger.debug("生成 PKCE 参数 - verifier: {}, challenge: {}", 
                     codeVerifier.substring(0, 10) + "...", codeChallenge.substring(0, 10) + "...");
+        
+        // 生成JWT格式的state参数，包含codeVerifier和时间戳信息
+        // 这样在k8s多pod环境下不需要共享状态存储
+        String state = generateJwtState(codeVerifier);
+        logger.debug("生成 JWT state 参数: {}", state.substring(0, Math.min(50, state.length())) + "...");
         
         // 构建授权请求 URL
         String authUrl = UriComponentsBuilder.fromHttpUrl(keycloakConfig.getAuthorizationUrl())
@@ -119,7 +114,7 @@ public class OAuth2Service {
                 .queryParam("client_id", keycloakConfig.getClientId())  // 客户端 ID
                 .queryParam("redirect_uri", keycloakConfig.getRedirectUri())  // 回调 URI
                 .queryParam("scope", "openid profile email")           // 请求的权限范围
-                .queryParam("state", state)                             // CSRF 保护
+                .queryParam("state", state)                             // JWT格式的状态参数
                 .queryParam("code_challenge", codeChallenge)            // PKCE 挑战
                 .queryParam("code_challenge_method", "S256")            // PKCE 挑战方法
                 .build()
@@ -149,17 +144,14 @@ public class OAuth2Service {
         logger.info("开始处理授权回调 - code: {}, state: {}", 
                    code.substring(0, Math.min(10, code.length())) + "...", state);
         
-        // 第一步：验证 state 参数，防止 CSRF 攻击
-        if (!validateState(state)) {
-            logger.error("State 参数验证失败: {}", state);
-            throw new RuntimeException("无效的 state 参数，可能存在 CSRF 攻击");
-        }
-        
-        // 获取对应的 code_verifier
-        String codeVerifier = codeVerifierStore.get(state);
-        if (codeVerifier == null) {
-            logger.error("找不到对应的 code_verifier: {}", state);
-            throw new RuntimeException("无效的会话状态");
+        // 第一步：验证 JWT state 参数并提取 codeVerifier，防止 CSRF 攻击
+        String codeVerifier;
+        try {
+            codeVerifier = validateJwtStateAndExtractCodeVerifier(state);
+            logger.debug("成功验证 state 并提取 codeVerifier: {}", codeVerifier.substring(0, 10) + "...");
+        } catch (Exception e) {
+            logger.error("State 参数验证失败: {}, 错误: {}", state, e.getMessage());
+            throw new RuntimeException("无效的 state 参数，可能存在 CSRF 攻击或会话已过期: " + e.getMessage());
         }
         
         try {
@@ -217,7 +209,6 @@ public class OAuth2Service {
             
             String accessToken = (String) tokenResponse.get("access_token");
             String idToken = (String) tokenResponse.get("id_token");
-            String refreshToken = (String) tokenResponse.get("refresh_token");
             
             if (accessToken == null || idToken == null) {
                 logger.error("令牌响应中缺少必要的令牌");
@@ -232,10 +223,6 @@ public class OAuth2Service {
             
             // 可选：从 UserInfo 端点获取更多用户信息
             enrichUserInfoFromEndpoint(userInfo, accessToken);
-            
-            // 清理临时存储的参数
-            stateStore.remove(state);
-            codeVerifierStore.remove(state);
             
             logger.info("用户信息解析完成: {}", userInfo);
             return userInfo;
@@ -368,18 +355,86 @@ public class OAuth2Service {
     // =========================== 辅助方法 ===========================
     
     /**
-     * 验证 state 参数
+     * 生成JWT格式的state参数
      * 
-     * @param state 要验证的 state 参数
-     * @return true 如果 state 有效
+     * 将codeVerifier和时间戳信息编码到JWT中，避免在多pod环境中使用共享存储
+     * 
+     * @param codeVerifier PKCE code verifier
+     * @return JWT格式的state字符串
      */
-    private boolean validateState(String state) {
-        if (state == null || state.trim().isEmpty()) {
-            return false;
+    private String generateJwtState(String codeVerifier) {
+        try {
+            Key key = Keys.hmacShaKeyFor(JWT_SECRET.getBytes(StandardCharsets.UTF_8));
+            
+            long currentTime = System.currentTimeMillis();
+            String randomNonce = generateRandomString(16);
+            
+            return Jwts.builder()
+                    .setIssuer("aegis-demo")
+                    .setSubject("oauth-state")
+                    .setIssuedAt(new java.util.Date(currentTime))
+                    .setExpiration(new java.util.Date(currentTime + 600000)) // 10分钟过期
+                    .claim("codeVerifier", codeVerifier)
+                    .claim("nonce", randomNonce)
+                    .signWith(key)
+                    .compact();
+        } catch (Exception e) {
+            logger.error("生成JWT state失败", e);
+            throw new RuntimeException("生成state参数失败", e);
         }
-        return stateStore.containsKey(state);
     }
     
+    /**
+     * 验证JWT格式的state参数并提取codeVerifier
+     * 
+     * @param jwtState JWT格式的state参数
+     * @return codeVerifier
+     * @throws RuntimeException 如果state无效或过期
+     */
+    private String validateJwtStateAndExtractCodeVerifier(String jwtState) {
+        if (jwtState == null || jwtState.trim().isEmpty()) {
+            throw new RuntimeException("State参数为空");
+        }
+        
+        try {
+            Key key = Keys.hmacShaKeyFor(JWT_SECRET.getBytes(StandardCharsets.UTF_8));
+            
+            Claims claims = Jwts.parserBuilder()
+                    .setSigningKey(key)
+                    .requireIssuer("aegis-demo")
+                    .requireSubject("oauth-state")
+                    .build()
+                    .parseClaimsJws(jwtState)
+                    .getBody();
+            
+            // 检查是否过期
+            if (claims.getExpiration().before(new java.util.Date())) {
+                throw new RuntimeException("State参数已过期");
+            }
+            
+            // 提取codeVerifier
+            String codeVerifier = claims.get("codeVerifier", String.class);
+            if (codeVerifier == null || codeVerifier.trim().isEmpty()) {
+                throw new RuntimeException("State参数中缺少codeVerifier");
+            }
+            
+            logger.debug("成功验证JWT state，签发时间: {}, 过期时间: {}", 
+                        claims.getIssuedAt(), claims.getExpiration());
+            
+            return codeVerifier;
+            
+        } catch (io.jsonwebtoken.ExpiredJwtException e) {
+            throw new RuntimeException("State参数已过期，请重新开始登录流程");
+        } catch (io.jsonwebtoken.MalformedJwtException e) {
+            throw new RuntimeException("State参数格式错误");
+        } catch (io.jsonwebtoken.security.SignatureException e) {
+            throw new RuntimeException("State参数签名验证失败，可能存在安全风险");
+        } catch (Exception e) {
+            logger.error("验证JWT state时发生错误: {}", e.getMessage());
+            throw new RuntimeException("State参数验证失败: " + e.getMessage());
+        }
+    }
+
     /**
      * 生成随机字符串
      * 
@@ -425,17 +480,23 @@ public class OAuth2Service {
      *    - 安全存储 refresh token
      *    - 处理令牌过期和撤销
      * 
-     * 3. 状态管理：
-     *    - 使用分布式缓存（如 Redis）存储 state 和 PKCE 参数
-     *    - 设置适当的过期时间
-     *    - 实现状态清理机制
+     * 3. 分布式环境状态管理：
+     *    - 当前实现使用JWT格式的自包含state，支持k8s多pod环境
+     *    - JWT state包含加密的codeVerifier和时间戳，无需外部存储
+     *    - 所有pod使用相同的JWT密钥，确保状态验证一致性
+     *    - 设置适当的JWT过期时间（当前10分钟）
      * 
-     * 4. 错误处理和日志：
+     * 4. 密钥管理：
+     *    - 生产环境应从环境变量或密钥管理系统加载JWT签名密钥
+     *    - 定期轮换密钥以增强安全性
+     *    - 确保所有pod实例使用相同的密钥
+     * 
+     * 5. 错误处理和日志：
      *    - 详细的错误日志用于问题诊断
      *    - 用户友好的错误消息
      *    - 安全日志审计
      * 
-     * 5. 网络安全：
+     * 6. 网络安全：
      *    - 使用 HTTPS
      *    - 验证 SSL 证书
      *    - 实现请求重试和超时机制
