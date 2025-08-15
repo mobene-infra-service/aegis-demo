@@ -14,4 +14,14 @@ keycloak:
 # 应用程序基础配置
 app:
   base:
+    # 明确不包含端口号，避免生成 :80 后缀
     url: https://sso-demo.jinguobyte.com
+
+# 生产环境服务器配置
+server:
+  # 解决反向代理后的端口显示问题
+  forward-headers-strategy: framework
+  tomcat:
+    # 信任所有代理（根据实际情况调整）
+    remote-ip-header: x-forwarded-for
+    protocol-header: x-forwarded-proto

@@ -3,6 +3,9 @@ server:
   servlet:
     session:
       timeout: 30m
+  # 修复生产环境端口显示问题
+  forward-headers-strategy: native
+  use-forward-headers: true
 
 spring:
   application:
@@ -35,31 +38,3 @@ logging:
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
 
-# 管理端点配置 - 用于 Kubernetes 健康检查
-management:
-  # 管理端口配置，独立于应用端口
-  server:
-    port: 9000
-    address: 0.0.0.0
-  
-  # 端点配置
-  endpoints:
-    web:
-      exposure:
-        include: health,info,metrics,readiness,liveness
-      base-path: /
-  
-  # 健康检查详细配置
-  endpoint:
-    health:
-      show-details: always
-      probes:
-        enabled: true
-  
-  # 健康检查组件
-  health:
-    # 启用各种健康检查组件
-    readinessstate:
-      enabled: true
-    livenessstate:
-      enabled: true

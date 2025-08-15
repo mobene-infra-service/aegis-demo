@@ -1,5 +1,7 @@
 package com.aegis.demo.config;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 
@@ -16,6 +18,8 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration
 public class KeycloakConfig {
+    
+    private static final Logger logger = LoggerFactory.getLogger(KeycloakConfig.class);
 
     // =========================== 基础配置 ===========================
     
@@ -125,7 +129,9 @@ public class KeycloakConfig {
      * @return 完整的回调重定向 URI
      */
     public String getRedirectUri() {
-        return appBaseUrl + "/auth/callback";
+        String redirectUri = appBaseUrl + "/auth/callback";
+        logger.debug("生成的重定向 URI: {}", redirectUri);
+        return redirectUri;
     }
     
     /**
