@@ -13,6 +13,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 
+import jakarta.servlet.http.HttpSession;
+
 /**
  * 主控制器 - 处理用户界面和 OAuth2 登录流程
  * 
@@ -43,8 +45,8 @@ public class HomeController {
     @Autowired
     private ObjectMapper objectMapper;
     
-    // 简单的内存会话管理（生产环境应使用 Redis 等）
-    private UserInfo currentUser = null;
+    // HTTP Session 中存储用户信息的键名
+    private static final String SESSION_USER_KEY = "currentUser";
     
     // =========================== 首页 - 登录入口 ===========================
     
@@ -55,13 +57,15 @@ public class HomeController {
      * - 未登录：显示登录页面
      * - 已登录：重定向到用户信息页面
      * 
+     * @param session HTTP会话，用于检查用户登录状态
      * @param model Thymeleaf 模型对象
      * @return 视图名称
      */
     @GetMapping("/")
-    public String home(Model model) {
+    public String home(HttpSession session, Model model) {
         logger.info("访问首页，检查用户登录状态");
         
+        UserInfo currentUser = (UserInfo) session.getAttribute(SESSION_USER_KEY);
         if (currentUser != null) {
             logger.info("用户已登录，重定向到用户页面: {}", currentUser.getPreferredUsername());
             String userUrl = keycloakConfig.getAppBaseUrl() + "/user";
@@ -130,6 +134,7 @@ public class HomeController {
      * @param code 从 Keycloak 返回的授权码
      * @param state 防 CSRF 攻击的状态参数  
      * @param error 如果授权失败，Keycloak 返回的错误信息
+     * @param session HTTP会话，用于存储用户信息
      * @param model Thymeleaf 模型对象
      * @return 重定向到用户信息页面或错误页面
      */
@@ -138,6 +143,7 @@ public class HomeController {
             @RequestParam(value = "code", required = false) String code,
             @RequestParam(value = "state", required = false) String state,
             @RequestParam(value = "error", required = false) String error,
+            HttpSession session,
             Model model) {
         
         logger.info("收到授权回调 - code: {}, state: {}, error: {}", 
@@ -164,7 +170,10 @@ public class HomeController {
             // 1. 验证 state 参数
             // 2. 使用授权码交换访问令牌
             // 3. 解析 ID Token 获取用户信息
-            currentUser = oauth2Service.handleCallback(code, state);
+            UserInfo currentUser = oauth2Service.handleCallback(code, state);
+            
+            // 将用户信息存储到HTTP会话中，避免多用户状态混乱
+            session.setAttribute(SESSION_USER_KEY, currentUser);
             
             logger.info("用户登录成功: {}", currentUser.getPreferredUsername());
             
@@ -193,12 +202,16 @@ public class HomeController {
      * 这个页面展示了从 OAuth2/OIDC 流程中获取的各种用户数据，
      * 帮助开发者理解令牌中包含的信息类型和结构。
      * 
+     * @param session HTTP会话，用于获取用户信息
      * @param model Thymeleaf 模型对象
      * @return 用户信息页面视图
      */
     @GetMapping("/user")
-    public String user(Model model) {
+    public String user(HttpSession session, Model model) {
         logger.info("访问用户信息页面");
+        
+        // 从HTTP会话中获取用户信息
+        UserInfo currentUser = (UserInfo) session.getAttribute(SESSION_USER_KEY);
         
         // 检查用户是否已登录
         if (currentUser == null) {
@@ -211,7 +224,7 @@ public class HomeController {
         // 检查令牌是否已过期
         if (currentUser.isTokenExpired()) {
             logger.warn("用户令牌已过期: {}", currentUser.getPreferredUsername());
-            currentUser = null;  // 清除过期的用户信息
+            session.removeAttribute(SESSION_USER_KEY);  // 清除过期的用户信息
             model.addAttribute("error", "登录已过期，请重新登录");
             return "index";
         }
@@ -247,12 +260,16 @@ public class HomeController {
     /**
      * 处理 GET 登出请求 - 显示登出确认页面
      * 
+     * @param session HTTP会话，用于获取用户信息
      * @param model Thymeleaf 模型对象
      * @return 登出确认页面视图
      */
     @GetMapping("/logout")
-    public String showLogout(Model model) {
+    public String showLogout(HttpSession session, Model model) {
         logger.info("显示登出确认页面");
+        
+        // 从HTTP会话中获取用户信息
+        UserInfo currentUser = (UserInfo) session.getAttribute(SESSION_USER_KEY);
         
         // 添加用户信息到模型（如果已登录）
         if (currentUser != null) {
@@ -274,15 +291,17 @@ public class HomeController {
      * 
      * 这确保用户从所有相关应用程序中登出，而不仅仅是当前应用。
      * 
+     * @param session HTTP会话，用于获取和清除用户信息
      * @return 重定向到 Keycloak 登出端点
      */
     @PostMapping("/logout")
-    public String logout() {
-        UserInfo userToLogout = currentUser; // 保存用户信息用于生成登出URL
+    public String logout(HttpSession session) {
+        // 从HTTP会话中获取用户信息
+        UserInfo userToLogout = (UserInfo) session.getAttribute(SESSION_USER_KEY);
         
-        if (currentUser != null) {
-            logger.info("用户登出: {}", currentUser.getPreferredUsername());
-            currentUser = null;  // 清除本地会话
+        if (userToLogout != null) {
+            logger.info("用户登出: {}", userToLogout.getPreferredUsername());
+            session.removeAttribute(SESSION_USER_KEY);  // 清除本地会话
         } else {
             logger.info("匿名用户尝试登出");
         }
