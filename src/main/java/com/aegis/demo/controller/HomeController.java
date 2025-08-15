@@ -1,5 +1,6 @@
 package com.aegis.demo.controller;
 
+import com.aegis.demo.config.KeycloakConfig;
 import com.aegis.demo.model.UserInfo;
 import com.aegis.demo.service.OAuth2Service;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -34,6 +35,10 @@ public class HomeController {
     @Autowired
     private OAuth2Service oauth2Service;
     
+    // 注入 Keycloak 配置，用于获取基础 URL
+    @Autowired
+    private KeycloakConfig keycloakConfig;
+    
     // 用于格式化 JSON 数据显示
     @Autowired
     private ObjectMapper objectMapper;
@@ -59,7 +64,9 @@ public class HomeController {
         
         if (currentUser != null) {
             logger.info("用户已登录，重定向到用户页面: {}", currentUser.getPreferredUsername());
-            return "redirect:/user";
+            String userUrl = keycloakConfig.getAppBaseUrl() + "/user";
+            logger.debug("重定向到用户页面: {}", userUrl);
+            return "redirect:" + userUrl;
         }
         
         logger.info("用户未登录，显示登录页面");
@@ -161,8 +168,10 @@ public class HomeController {
             
             logger.info("用户登录成功: {}", currentUser.getPreferredUsername());
             
-            // 重定向到用户信息页面
-            return "redirect:/user";
+            // 重定向到用户信息页面（使用绝对URL）
+            String userUrl = keycloakConfig.getAppBaseUrl() + "/user";
+            logger.debug("登录成功，重定向到用户页面: {}", userUrl);
+            return "redirect:" + userUrl;
             
         } catch (Exception e) {
             logger.error("处理授权回调时发生错误", e);
@@ -194,7 +203,9 @@ public class HomeController {
         // 检查用户是否已登录
         if (currentUser == null) {
             logger.warn("用户未登录，重定向到首页");
-            return "redirect:/";
+            String homeUrl = keycloakConfig.getAppBaseUrl();
+            logger.debug("重定向到首页: {}", homeUrl);
+            return "redirect:" + homeUrl;
         }
         
         // 检查令牌是否已过期
@@ -285,8 +296,10 @@ public class HomeController {
             
         } catch (Exception e) {
             logger.error("生成登出 URL 时发生错误", e);
-            // 即使 SSO 登出失败，也要确保本地登出
-            return "redirect:/";
+            // 即使 SSO 登出失败，也要确保本地登出，重定向到首页（使用绝对URL）
+            String homeUrl = keycloakConfig.getAppBaseUrl();
+            logger.debug("登出异常处理，重定向到首页: {}", homeUrl);
+            return "redirect:" + homeUrl;
         }
     }
 }
