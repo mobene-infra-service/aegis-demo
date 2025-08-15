@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aegis Keycloak JWT Demo</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="/css/style.css">
+    <style>
+        .token-display {
+            word-break: break-all;
+            font-family: monospace;
+            font-size: 12px;
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #dee2e6;
+            max-height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+        
+        .loading {
+            display: none;
+        }
+        
+        .error {
+            color: #dc3545;
+        }
+        
+        .success {
+            color: #198754;
+        }
+        
+        .user-info {
+            background-color: #e7f3ff;
+            border: 1px solid #b8daff;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        
+        .claims-display {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 3px;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="#" onclick="showHome()">
+                <i class="fas fa-shield-alt me-2"></i>Aegis JWT Demo
+            </a>
+            <div class="navbar-nav ms-auto" id="navButtons">
+                <!-- 导航按钮将由JavaScript动态生成 -->
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-5">
+        <!-- 首页 - 登录页面 -->
+        <div id="homePage" class="page">
+            <div class="row justify-content-center">
+                <div class="col-md-6">
+                    <div class="card shadow">
+                        <div class="card-header bg-primary text-white text-center">
+                            <h3 class="card-title mb-0">
+                                <i class="fas fa-sign-in-alt me-2"></i>欢迎使用 Aegis Demo
+                            </h3>
+                        </div>
+                        <div class="card-body text-center p-4">
+                            <div class="mb-4">
+                                <i class="fas fa-shield-alt fa-4x text-primary mb-3"></i>
+                                <h4 class="mb-3">AOP + JWT 认证演示</h4>
+                                <p class="text-muted">
+                                    展示前后端分离架构下的JWT认证方式<br>
+                                    使用 AOP 切面进行权限控制
+                                </p>
+                            </div>
+                            
+                            <div id="loginError" class="alert alert-danger" style="display: none;"></div>
+                            
+                            <div class="d-grid">
+                                <button id="loginButton" onclick="login()" class="btn btn-primary btn-lg">
+                                    <span class="loading spinner-border spinner-border-sm me-2" role="status"></span>
+                                    <i class="fas fa-sign-in-alt me-2"></i>
+                                    <span class="button-text">使用 Keycloak 登录</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 功能说明 -->
+                    <div class="card shadow mt-4">
+                        <div class="card-body">
+                            <h6 class="text-primary mb-3">
+                                <i class="fas fa-info-circle me-2"></i>技术特点
+                            </h6>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <small class="text-muted">
+                                        <strong>认证方式:</strong>
+                                        <ul class="mt-2">
+                                            <li>OAuth2 + OpenID Connect</li>
+                                            <li>AOP 切面权限控制</li>
+                                            <li>JWT 无状态认证</li>
+                                            <li>前后端分离架构</li>
+                                        </ul>
+                                    </small>
+                                </div>
+                                <div class="col-md-6">
+                                    <small class="text-muted">
+                                        <strong>安全特性:</strong>
+                                        <ul class="mt-2">
+                                            <li>PKCE 安全增强</li>
+                                            <li>State 参数 CSRF 防护</li>
+                                            <li>Token 过期自动管理</li>
+                                            <li>RESTful API 设计</li>
+                                        </ul>
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 用户信息页面 -->
+        <div id="userPage" class="page" style="display: none;">
+            <div class="row justify-content-center">
+                <div class="col-md-10">
+                    <div class="card shadow">
+                        <div class="card-header bg-success text-white text-center">
+                            <h3 class="card-title mb-0">
+                                <i class="fas fa-user me-2"></i>用户信息
+                            </h3>
+                        </div>
+                        <div class="card-body p-4">
+                            <div id="userError" class="alert alert-danger" style="display: none;"></div>
+                            <div id="userLoading" class="loading text-center">
+                                <div class="spinner-border" role="status">
+                                    <span class="visually-hidden">加载中...</span>
+                                </div>
+                                <p class="mt-2">正在获取用户信息...</p>
+                            </div>
+                            
+                            <div id="userInfoContainer" style="display: none;">
+                                <div class="user-info">
+                                    <h5><i class="fas fa-user-circle me-2"></i>基本信息</h5>
+                                    <table class="table table-borderless">
+                                        <tbody>
+                                            <tr>
+                                                <td><strong>用户名:</strong></td>
+                                                <td id="userUsername">-</td>
+                                            </tr>
+                                            <tr>
+                                                <td><strong>邮箱:</strong></td>
+                                                <td id="userEmail">-</td>
+                                            </tr>
+                                            <tr>
+                                                <td><strong>姓名:</strong></td>
+                                                <td id="userFullName">-</td>
+                                            </tr>
+                                            <tr>
+                                                <td><strong>会话状态:</strong></td>
+                                                <td id="userSessionState">-</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                
+                                <div class="mt-4">
+                                    <h6><i class="fas fa-key me-2"></i>JWT Claims 数据</h6>
+                                    <div id="userClaims" class="claims-display"></div>
+                                </div>
+                                
+                                <div class="mt-4">
+                                    <h6>
+                                        <a class="text-decoration-none" data-bs-toggle="collapse" href="#jwtTokenCollapse" role="button" aria-expanded="false">
+                                            <i class="fas fa-token me-2"></i>JWT Token <i class="fas fa-chevron-down ms-1"></i>
+                                        </a>
+                                    </h6>
+                                    <div class="collapse" id="jwtTokenCollapse">
+                                        <div class="card card-body">
+                                            <div id="currentJwtToken" class="token-display" style="max-height: 150px;"></div>
+                                            <div class="mt-2">
+                                                <button onclick="copyCurrentToken()" class="btn btn-sm btn-outline-primary">
+                                                    <i class="fas fa-copy me-2"></i>复制 Token
+                                                </button>
+                                                <span id="copyCurrentMessage" class="text-success ms-2" style="display: none;">
+                                                    <i class="fas fa-check me-1"></i>已复制！
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="mt-4 text-center">
+                                    <button onclick="refreshUserInfo()" class="btn btn-outline-primary me-2">
+                                        <i class="fas fa-sync-alt me-2"></i>刷新信息
+                                    </button>
+                                    <button onclick="logout()" class="btn btn-danger">
+                                        <i class="fas fa-sign-out-alt me-2"></i>登出
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 登录成功页面 -->
+        <div id="successPage" class="page" style="display: none;">
+            <div class="row justify-content-center">
+                <div class="col-md-10">
+                    <div class="card shadow">
+                        <div class="card-header bg-success text-white text-center">
+                            <h3 class="card-title mb-0">
+                                <i class="fas fa-check-circle me-2"></i>登录成功
+                            </h3>
+                        </div>
+                        <div class="card-body p-4">
+                            <div class="text-center mb-4">
+                                <i class="fas fa-check-circle fa-4x text-success mb-3"></i>
+                                <h4>🎉 恭喜！您已成功登录</h4>
+                                <p class="text-muted">JWT Token 已生成并保存</p>
+                            </div>
+                            
+                            <div class="mb-4">
+                                <h6><i class="fas fa-key me-2"></i>您的 JWT Token：</h6>
+                                <div id="jwtTokenDisplay" class="token-display"></div>
+                                <div class="mt-2">
+                                    <button onclick="copyToken()" class="btn btn-sm btn-outline-primary">
+                                        <i class="fas fa-copy me-2"></i>复制 Token
+                                    </button>
+                                    <span id="copyMessage" class="text-success ms-2" style="display: none;">
+                                        <i class="fas fa-check me-1"></i>已复制！
+                                    </span>
+                                </div>
+                            </div>
+                            
+                            <div class="alert alert-info">
+                                <h6 class="alert-heading">
+                                    <i class="fas fa-info-circle me-2"></i>使用说明
+                                </h6>
+                                <p class="mb-2">Token 已自动保存到浏览器本地存储，您可以：</p>
+                                <ul class="mb-0">
+                                    <li>访问用户信息页面查看详细信息</li>
+                                    <li>在请求头中使用：<code>Authorization: Bearer YOUR_TOKEN</code></li>
+                                    <li>API调用时会自动携带认证信息</li>
+                                </ul>
+                            </div>
+                            
+                            <div class="text-center">
+                                <button onclick="showUserPage()" class="btn btn-primary me-2">
+                                    <i class="fas fa-user me-2"></i>查看用户信息
+                                </button>
+                                <button onclick="showHome()" class="btn btn-outline-secondary">
+                                    <i class="fas fa-home me-2"></i>返回首页
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 登出页面 -->
+        <div id="logoutPage" class="page" style="display: none;">
+            <div class="row justify-content-center">
+                <div class="col-md-8">
+                    <div class="card shadow">
+                        <div class="card-header bg-warning text-dark text-center">
+                            <h3 class="card-title mb-0">
+                                <i class="fas fa-sign-out-alt me-2"></i>登出成功
+                            </h3>
+                        </div>
+                        <div class="card-body text-center p-4">
+                            <div class="mb-4">
+                                <i class="fas fa-check-circle fa-4x text-success mb-3"></i>
+                                <h4>👋 再见！</h4>
+                                <p class="text-muted">您已成功登出系统</p>
+                            </div>
+                            
+                            <div class="alert alert-info">
+                                <h6 class="alert-heading">
+                                    <i class="fas fa-info-circle me-2"></i>JWT 无状态登出说明
+                                </h6>
+                                <p class="mb-2">已为您自动清除：</p>
+                                <ul class="mb-0 text-start">
+                                    <li><strong>浏览器本地存储</strong> - JWT Token 已删除</li>
+                                    <li><strong>会话存储</strong> - 临时数据已清除</li>
+                                    <li><strong>认证状态</strong> - 重置为未登录状态</li>
+                                </ul>
+                            </div>
+                            
+                            <div class="text-center">
+                                <button onclick="login()" class="btn btn-primary me-2">
+                                    <i class="fas fa-sign-in-alt me-2"></i>重新登录
+                                </button>
+                                <button onclick="showHome()" class="btn btn-outline-secondary">
+                                    <i class="fas fa-home me-2"></i>返回首页
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Font Awesome -->
+    <script src="https://kit.fontawesome.com/a076d05399.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        // 全局变量
+        let currentToken = null;
+        
+        // 页面初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('页面加载完成，初始化应用');
+            
+            // 从本地存储加载token
+            currentToken = localStorage.getItem('jwt_token');
+            
+            // 检查URL参数，处理OAuth回调
+            const urlParams = new URLSearchParams(window.location.search);
+            const code = urlParams.get('code');
+            const state = urlParams.get('state');
+            const error = urlParams.get('error');
+            
+            if (code && state) {
+                // 处理OAuth回调
+                handleCallback(code, state, error);
+            } else if (currentToken) {
+                // 已有token，显示用户页面
+                showUserPage();
+            } else {
+                // 显示首页
+                showHome();
+            }
+            
+            updateNavigation();
+        });
+        
+        // 显示首页
+        function showHome() {
+            hideAllPages();
+            document.getElementById('homePage').style.display = 'block';
+            updateNavigation();
+            history.pushState({page: 'home'}, '', '/');
+        }
+        
+        // 显示用户页面
+        function showUserPage() {
+            if (!currentToken) {
+                showHome();
+                return;
+            }
+            
+            hideAllPages();
+            document.getElementById('userPage').style.display = 'block';
+            updateNavigation();
+            history.pushState({page: 'user'}, '', '/user');
+            
+            // 加载用户信息
+            loadUserInfo();
+        }
+        
+        // 显示成功页面
+        function showSuccessPage() {
+            hideAllPages();
+            document.getElementById('successPage').style.display = 'block';
+            
+            // 显示token
+            if (currentToken) {
+                document.getElementById('jwtTokenDisplay').textContent = currentToken;
+            }
+            
+            updateNavigation();
+            history.pushState({page: 'success'}, '', '/success');
+        }
+        
+        // 显示登出页面
+        function showLogoutPage() {
+            hideAllPages();
+            document.getElementById('logoutPage').style.display = 'block';
+            updateNavigation();
+            history.pushState({page: 'logout'}, '', '/logout');
+        }
+        
+        // 隐藏所有页面
+        function hideAllPages() {
+            const pages = document.querySelectorAll('.page');
+            pages.forEach(page => page.style.display = 'none');
+        }
+        
+        // 更新导航栏
+        function updateNavigation() {
+            const navButtons = document.getElementById('navButtons');
+            
+            if (currentToken) {
+                navButtons.innerHTML = `
+                    <button onclick="showUserPage()" class="btn btn-outline-light me-2">
+                        <i class="fas fa-user me-1"></i>用户信息
+                    </button>
+                    <button onclick="logout()" class="btn btn-outline-light">
+                        <i class="fas fa-sign-out-alt me-1"></i>登出
+                    </button>
+                `;
+            } else {
+                navButtons.innerHTML = `
+                    <button onclick="login()" class="btn btn-outline-light">
+                        <i class="fas fa-sign-in-alt me-1"></i>登录
+                    </button>
+                `;
+            }
+        }
+        
+        // 登录函数
+        async function login() {
+            console.log('开始登录流程');
+            
+            // 尝试获取主页面的登录按钮，如果不存在则可能是从导航栏调用的
+            const button = document.getElementById('loginButton');
+            const loading = button ? button.querySelector('.loading') : null;
+            const buttonText = button ? button.querySelector('.button-text') : null;
+            const errorDiv = document.getElementById('loginError');
+            
+            // 显示加载状态（如果元素存在的话）
+            if (loading) loading.style.display = 'inline-block';
+            if (buttonText) buttonText.textContent = '正在重定向...';
+            if (button) button.disabled = true;
+            if (errorDiv) errorDiv.style.display = 'none';
+            
+            try {
+                // 获取授权URL
+                const response = await fetch('/api/auth/url');
+                const data = await response.json();
+                
+                if (data.success) {
+                    console.log('获取授权URL成功，重定向到Keycloak');
+                    // 重定向到Keycloak登录页面
+                    window.location.href = data.authUrl;
+                } else {
+                    throw new Error(data.error || '获取授权URL失败');
+                }
+                
+            } catch (error) {
+                console.error('登录失败:', error);
+                
+                // 显示错误信息（如果错误div存在的话）
+                if (errorDiv) {
+                    errorDiv.textContent = '登录失败: ' + error.message;
+                    errorDiv.style.display = 'block';
+                } else {
+                    // 如果没有错误div，使用alert显示错误
+                    alert('登录失败: ' + error.message);
+                }
+                
+                // 恢复按钮状态
+                if (loading) loading.style.display = 'none';
+                if (buttonText) buttonText.textContent = '使用 Keycloak 登录';
+                if (button) button.disabled = false;
+            }
+        }
+        
+        // 处理OAuth回调
+        async function handleCallback(code, state, error) {
+            console.log('处理OAuth回调');
+            
+            if (error) {
+                console.error('OAuth授权错误:', error);
+                alert('登录失败: ' + error);
+                showHome();
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/auth/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    console.log('登录成功，保存token');
+                    
+                    // 保存token
+                    currentToken = data.token;
+                    localStorage.setItem('jwt_token', currentToken);
+                    
+                    // 清除URL参数
+                    history.replaceState({}, '', '/');
+                    
+                    // 直接显示用户信息页面
+                    showUserPage();
+                } else {
+                    throw new Error(data.error || '登录处理失败');
+                }
+                
+            } catch (error) {
+                console.error('处理回调失败:', error);
+                alert('登录失败: ' + error.message);
+                showHome();
+            }
+        }
+        
+        // 加载用户信息
+        async function loadUserInfo() {
+            const loading = document.getElementById('userLoading');
+            const container = document.getElementById('userInfoContainer');
+            const errorDiv = document.getElementById('userError');
+            
+            // 显示加载状态
+            loading.style.display = 'block';
+            container.style.display = 'none';
+            errorDiv.style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/user/info', {
+                    headers: {
+                        'Authorization': 'Bearer ' + currentToken
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    // 显示用户信息
+                    const user = data.user;
+                    document.getElementById('userUsername').textContent = user.username || '-';
+                    document.getElementById('userEmail').textContent = user.email || '-';
+                    document.getElementById('userFullName').textContent = user.fullName || '-';
+                    document.getElementById('userSessionState').textContent = user.sessionState || '-';
+                    document.getElementById('userClaims').textContent = JSON.stringify(user.claims, null, 2);
+                    
+                    // 显示当前的JWT token
+                    document.getElementById('currentJwtToken').textContent = currentToken;
+                    
+                    loading.style.display = 'none';
+                    container.style.display = 'block';
+                } else {
+                    throw new Error(data.error || '获取用户信息失败');
+                }
+                
+            } catch (error) {
+                console.error('获取用户信息失败:', error);
+                loading.style.display = 'none';
+                errorDiv.textContent = '获取用户信息失败: ' + error.message;
+                errorDiv.style.display = 'block';
+                
+                // 如果是认证错误，清除token并返回首页
+                if (error.message.includes('401') || error.message.includes('认证')) {
+                    localStorage.removeItem('jwt_token');
+                    currentToken = null;
+                    setTimeout(() => showHome(), 2000);
+                }
+            }
+        }
+        
+        // 刷新用户信息
+        function refreshUserInfo() {
+            loadUserInfo();
+        }
+        
+        // 登出函数
+        async function logout() {
+            console.log('开始登出');
+            
+            try {
+                // 调用登出API（可选）
+                if (currentToken) {
+                    await fetch('/api/auth/logout', {
+                        headers: {
+                            'Authorization': 'Bearer ' + currentToken
+                        }
+                    });
+                }
+            } catch (error) {
+                console.warn('调用登出API失败（非致命）:', error);
+            }
+            
+            // 清除本地数据
+            localStorage.removeItem('jwt_token');
+            sessionStorage.clear();
+            currentToken = null;
+            
+            // 显示登出页面
+            showLogoutPage();
+            
+            console.log('登出成功');
+        }
+        
+        // 复制token（登录成功页面使用）
+        function copyToken() {
+            const tokenText = document.getElementById('jwtTokenDisplay').textContent;
+            navigator.clipboard.writeText(tokenText).then(function() {
+                const message = document.getElementById('copyMessage');
+                message.style.display = 'inline';
+                setTimeout(() => {
+                    message.style.display = 'none';
+                }, 3000);
+            }).catch(function(err) {
+                console.error('复制失败:', err);
+                alert('复制失败，请手动选择复制');
+            });
+        }
+        
+        // 复制当前token（用户信息页面使用）
+        function copyCurrentToken() {
+            if (!currentToken) {
+                alert('没有可复制的token');
+                return;
+            }
+            
+            navigator.clipboard.writeText(currentToken).then(function() {
+                const message = document.getElementById('copyCurrentMessage');
+                message.style.display = 'inline';
+                setTimeout(() => {
+                    message.style.display = 'none';
+                }, 3000);
+            }).catch(function(err) {
+                console.error('复制失败:', err);
+                alert('复制失败，请手动选择复制');
+            });
+        }
+        
+        // 处理浏览器前进后退
+        window.addEventListener('popstate', function(event) {
+            if (event.state && event.state.page) {
+                switch (event.state.page) {
+                    case 'home':
+                        showHome();
+                        break;
+                    case 'user':
+                        showUserPage();
+                        break;
+                    case 'success':
+                        // 成功页面已废弃，重定向到用户页面
+                        showUserPage();
+                        break;
+                    case 'logout':
+                        showLogoutPage();
+                        break;
+                }
+            } else {
+                showHome();
+            }
+        });
+    </script>
+</body>
+</html>

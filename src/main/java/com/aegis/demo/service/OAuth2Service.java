@@ -2,17 +2,16 @@ package com.aegis.demo.service;
 
 import com.aegis.demo.config.KeycloakConfig;
 import com.aegis.demo.model.UserInfo;
+import com.aegis.demo.util.JwtUtil;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.security.Keys;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -23,10 +22,13 @@ import org.springframework.web.util.UriComponentsBuilder;
 import jakarta.annotation.PostConstruct;
 
 import java.nio.charset.StandardCharsets;
-import java.security.Key;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 
 /**
@@ -50,9 +52,9 @@ import java.util.Map;
  * 注意：生产环境建议使用 Spring Security OAuth2 Client 以获得更好的安全性和维护性
  */
 @Service
+@Slf4j
 public class OAuth2Service {
     
-    private static final Logger logger = LoggerFactory.getLogger(OAuth2Service.class);
     
     @Autowired
     private KeycloakConfig keycloakConfig;
@@ -60,11 +62,19 @@ public class OAuth2Service {
     @Autowired
     private ObjectMapper objectMapper;
     
+    @Autowired
+    private JwtUtil jwtUtil;
+    
     private WebClient webClient;
     
-    // JWT 签名密钥，用于state参数的签名和验证
-    // 在k8s多pod环境中，所有pod使用相同密钥确保状态验证一致性
-    private final String JWT_SECRET = "aegis-demo-jwt-secret-key-for-state-validation-2024";
+    // 存储 state 和对应的 codeVerifier 映射（使用线程安全的ConcurrentHashMap）
+    private final Map<String, String> stateToCodeVerifierMap = new ConcurrentHashMap<>();
+    
+    // 存储 state 的创建时间，用于过期清理
+    private final Map<String, Long> stateCreationTimeMap = new ConcurrentHashMap<>();
+    
+    // state 的有效期（毫秒）- 10分钟
+    private static final long STATE_EXPIRATION_TIME = 10 * 60 * 1000L;
     
     @PostConstruct
     public void init() {
@@ -72,8 +82,8 @@ public class OAuth2Service {
                 .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(1024 * 1024))
                 .build();
         
-        logger.info("OAuth2Service 初始化完成");
-        logger.info("Keycloak 配置: {}", keycloakConfig);
+        log.info("OAuth2Service 初始化完成");
+        log.info("Keycloak 配置: {}", keycloakConfig);
     }
     
     // =========================== 第一步：生成授权请求 URL ===========================
@@ -95,18 +105,24 @@ public class OAuth2Service {
      * @return 完整的授权请求 URL
      */
     public String generateAuthorizationUrl() {
-        logger.info("开始生成授权请求 URL");
+        log.info("开始生成授权请求 URL");
         
-        // 生成 PKCE 参数，增强安全性
-        String codeVerifier = generateRandomString(64);
+        // 生成随机的 PKCE 参数
+        String codeVerifier = generateCodeVerifier();
         String codeChallenge = generateCodeChallenge(codeVerifier);
-        logger.debug("生成 PKCE 参数 - verifier: {}, challenge: {}", 
+        log.info("生成 PKCE 参数");
+        log.debug("PKCE 参数 - verifier: {}, challenge: {}", 
                     codeVerifier.substring(0, 10) + "...", codeChallenge.substring(0, 10) + "...");
         
-        // 生成JWT格式的state参数，包含codeVerifier和时间戳信息
-        // 这样在k8s多pod环境下不需要共享状态存储
-        String state = generateJwtState(codeVerifier);
-        logger.debug("生成 JWT state 参数: {}", state.substring(0, Math.min(50, state.length())) + "...");
+        // 生成随机的 state 参数
+        String state = generateState();
+        log.info("生成 state 参数: {}", state);
+        
+        // 存储 state 和 codeVerifier 的映射关系
+        long currentTime = System.currentTimeMillis();
+        stateToCodeVerifierMap.put(state, codeVerifier);
+        stateCreationTimeMap.put(state, currentTime);
+        log.debug("存储 state -> codeVerifier 映射，创建时间: {}", currentTime);
         
         // 构建授权请求 URL
         String authUrl = UriComponentsBuilder.fromHttpUrl(keycloakConfig.getAuthorizationUrl())
@@ -120,7 +136,7 @@ public class OAuth2Service {
                 .build()
                 .toUriString();
         
-        logger.info("生成授权 URL 成功: {}", authUrl);
+        log.info("生成授权 URL 成功: {}", authUrl);
         return authUrl;
     }
     
@@ -134,25 +150,43 @@ public class OAuth2Service {
      * 1. 验证 state 参数，确保请求没有被篡改
      * 2. 使用授权码向 Keycloak 的令牌端点请求访问令牌
      * 3. 解析返回的令牌和用户信息
+     * 4. 生成自己的 JWT token
      * 
      * @param code 授权码
      * @param state state 参数，用于 CSRF 保护验证
-     * @return 用户信息对象
+     * @return JWT token 字符串
      * @throws RuntimeException 如果交换令牌失败
      */
-    public UserInfo handleCallback(String code, String state) {
-        logger.info("开始处理授权回调 - code: {}, state: {}", 
+    public String handleCallback(String code, String state) {
+        log.info("开始处理授权回调 - code: {}, state: {}", 
                    code.substring(0, Math.min(10, code.length())) + "...", state);
         
-        // 第一步：验证 JWT state 参数并提取 codeVerifier，防止 CSRF 攻击
-        String codeVerifier;
-        try {
-            codeVerifier = validateJwtStateAndExtractCodeVerifier(state);
-            logger.debug("成功验证 state 并提取 codeVerifier: {}", codeVerifier.substring(0, 10) + "...");
-        } catch (Exception e) {
-            logger.error("State 参数验证失败: {}, 错误: {}", state, e.getMessage());
-            throw new RuntimeException("无效的 state 参数，可能存在 CSRF 攻击或会话已过期: " + e.getMessage());
+        // 第一步：验证 state 参数并获取对应的 codeVerifier
+        String codeVerifier = stateToCodeVerifierMap.get(state);
+        Long creationTime = stateCreationTimeMap.get(state);
+        
+        if (codeVerifier == null || creationTime == null) {
+            log.error("无效的 state 参数: {}", state);
+            throw new RuntimeException("无效的 state 参数");
         }
+        
+        // 检查 state 是否过期
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - creationTime > STATE_EXPIRATION_TIME) {
+            log.error("state 参数已过期: {}, 创建时间: {}, 当前时间: {}", 
+                     state, creationTime, currentTime);
+            // 清理过期的 state
+            stateToCodeVerifierMap.remove(state);
+            stateCreationTimeMap.remove(state);
+            throw new RuntimeException("state 参数已过期");
+        }
+        
+        // 使用后即删除，防止重放攻击
+        stateToCodeVerifierMap.remove(state);
+        stateCreationTimeMap.remove(state);
+        
+        log.info("state 参数验证通过，获取对应的 codeVerifier");
+        log.debug("使用 codeVerifier: {}", codeVerifier.substring(0, 10) + "...");
         
         try {
             // 第二步：构建令牌请求参数
@@ -164,10 +198,10 @@ public class OAuth2Service {
             formData.add("redirect_uri", keycloakConfig.getRedirectUri()); // 必须与授权请求中的一致
             formData.add("code_verifier", codeVerifier);                // PKCE 验证参数
             
-            logger.info("准备发送令牌请求到: {}", keycloakConfig.getTokenUrl());
-            logger.debug("令牌请求参数: client_id={}, redirect_uri={}", 
+            log.info("准备发送令牌请求到: {}", keycloakConfig.getTokenUrl());
+            log.debug("令牌请求参数: client_id={}, redirect_uri={}", 
                         keycloakConfig.getClientId(), keycloakConfig.getRedirectUri());
-            logger.debug("Client Secret 长度: {}", keycloakConfig.getClientSecret().length());
+            log.debug("Client Secret 长度: {}", keycloakConfig.getClientSecret().length());
             
             // 第三步：发送 HTTP POST 请求到 Keycloak 令牌端点
             String response;
@@ -180,16 +214,16 @@ public class OAuth2Service {
                         .onStatus(
                             status -> status.is4xxClientError() || status.is5xxServerError(),
                             clientResponse -> {
-                                logger.error("令牌请求失败 - HTTP状态码: {}", clientResponse.statusCode());
+                                log.error("令牌请求失败 - HTTP状态码: {}", clientResponse.statusCode());
                                 return clientResponse.bodyToMono(String.class)
                                     .doOnNext(errorBody -> {
-                                        logger.error("错误响应内容: {}", errorBody);
-                                        logger.error("请检查以下配置:");
-                                        logger.error("1. Client ID: {}", keycloakConfig.getClientId());
-                                        logger.error("2. Client Secret 是否正确");
-                                        logger.error("3. Redirect URI: {}", keycloakConfig.getRedirectUri());
-                                        logger.error("4. Keycloak 服务器地址: {}", keycloakConfig.getServerUrl());
-                                        logger.error("5. Realm 名称: {}", keycloakConfig.getRealm());
+                                        log.error("错误响应内容: {}", errorBody);
+                                        log.error("请检查以下配置:");
+                                        log.error("1. Client ID: {}", keycloakConfig.getClientId());
+                                        log.error("2. Client Secret 是否正确");
+                                        log.error("3. Redirect URI: {}", keycloakConfig.getRedirectUri());
+                                        log.error("4. Keycloak 服务器地址: {}", keycloakConfig.getServerUrl());
+                                        log.error("5. Realm 名称: {}", keycloakConfig.getRealm());
                                     })
                                     .map(errorBody -> new RuntimeException("令牌请求失败: " + errorBody));
                             }
@@ -197,11 +231,11 @@ public class OAuth2Service {
                         .bodyToMono(String.class)
                         .block();
             } catch (org.springframework.web.reactive.function.client.WebClientResponseException e) {
-                logger.error("WebClient 请求异常 - 状态码: {}, 响应体: {}", e.getStatusCode(), e.getResponseBodyAsString());
+                log.error("WebClient 请求异常 - 状态码: {}, 响应体: {}", e.getStatusCode(), e.getResponseBodyAsString());
                 throw new RuntimeException("令牌交换失败: " + e.getMessage() + ", 响应: " + e.getResponseBodyAsString(), e);
             }
             
-            logger.debug("收到令牌响应: {}", response.substring(0, Math.min(200, response.length())) + "...");
+            log.debug("收到令牌响应: {}", response.substring(0, Math.min(200, response.length())) + "...");
             
             // 第四步：解析令牌响应
             Map<String, Object> tokenResponse = objectMapper.readValue(response, 
@@ -211,11 +245,11 @@ public class OAuth2Service {
             String idToken = (String) tokenResponse.get("id_token");
             
             if (accessToken == null || idToken == null) {
-                logger.error("令牌响应中缺少必要的令牌");
+                log.error("令牌响应中缺少必要的令牌");
                 throw new RuntimeException("无效的令牌响应");
             }
             
-            logger.info("成功获取令牌 - access_token: {}, id_token: {}", 
+            log.info("成功获取令牌 - access_token: {}, id_token: {}", 
                        accessToken.substring(0, 20) + "...", idToken.substring(0, 20) + "...");
             
             // 第五步：解析 ID Token 获取用户信息
@@ -224,11 +258,24 @@ public class OAuth2Service {
             // 可选：从 UserInfo 端点获取更多用户信息
             enrichUserInfoFromEndpoint(userInfo, accessToken);
             
-            logger.info("用户信息解析完成: {}", userInfo);
-            return userInfo;
+            // 第六步：生成我们自己的 JWT token
+            Map<String, Object> jwtClaims = new HashMap<>();
+            jwtClaims.put("email", userInfo.getEmail());
+            jwtClaims.put("name", userInfo.getDisplayName());
+            jwtClaims.put("preferred_username", userInfo.getPreferredUsername());
+            jwtClaims.put("session_state", userInfo.getSessionState());
+            
+            // 添加原始的 Keycloak tokens
+            jwtClaims.put("keycloak_access_token", accessToken);
+            jwtClaims.put("keycloak_id_token", idToken);
+            
+            String jwtToken = jwtUtil.generateToken(userInfo.getPreferredUsername(), jwtClaims);
+            
+            log.info("用户信息解析完成，生成 JWT token: {}", userInfo.getPreferredUsername());
+            return jwtToken;
             
         } catch (Exception e) {
-            logger.error("处理授权回调时发生错误", e);
+            log.error("处理授权回调时发生错误", e);
             throw new RuntimeException("令牌交换失败: " + e.getMessage(), e);
         }
     }
@@ -250,7 +297,7 @@ public class OAuth2Service {
      * @return 解析后的用户信息
      */
     private UserInfo parseIdToken(String idToken) {
-        logger.debug("开始解析 ID Token");
+        log.debug("开始解析 ID Token");
         
         try {
             // 注意：这里为了演示目的，跳过了令牌签名验证
@@ -265,13 +312,13 @@ public class OAuth2Service {
             
             // 解码 payload 部分（Base64 URL 编码）
             String payload = new String(Base64.getUrlDecoder().decode(parts[1]), StandardCharsets.UTF_8);
-            logger.debug("ID Token payload: {}", payload);
+            log.debug("ID Token payload: {}", payload);
             
             // 解析 JSON 获取声明
             Map<String, Object> claims = objectMapper.readValue(payload, 
                     new TypeReference<Map<String, Object>>() {});
             
-            logger.info("成功解析 ID Token，包含 {} 个声明", claims.size());
+            log.info("成功解析 ID Token，包含 {} 个声明", claims.size());
             
             // 创建用户信息对象并保存原始 ID Token
             UserInfo userInfo = new UserInfo(claims);
@@ -280,7 +327,7 @@ public class OAuth2Service {
             return userInfo;
             
         } catch (Exception e) {
-            logger.error("解析 ID Token 时发生错误", e);
+            log.error("解析 ID Token 时发生错误", e);
             throw new RuntimeException("ID Token 解析失败: " + e.getMessage(), e);
         }
     }
@@ -297,7 +344,7 @@ public class OAuth2Service {
      * @param accessToken 访问令牌
      */
     private void enrichUserInfoFromEndpoint(UserInfo userInfo, String accessToken) {
-        logger.debug("开始从 UserInfo 端点获取详细信息");
+        log.debug("开始从 UserInfo 端点获取详细信息");
         
         try {
             // 使用访问令牌调用 UserInfo 端点
@@ -314,156 +361,136 @@ public class OAuth2Service {
                 
                 // 合并来自 UserInfo 端点的信息
                 // 这里可以根据需要更新或添加更多字段
-                logger.debug("从 UserInfo 端点获取到 {} 个额外声明", userInfoClaims.size());
+                log.debug("从 UserInfo 端点获取到 {} 个额外声明", userInfoClaims.size());
             }
             
         } catch (Exception e) {
             // UserInfo 端点调用失败不应该影响整个登录流程
-            logger.warn("从 UserInfo 端点获取信息时发生错误（非致命）", e);
+            log.warn("从 UserInfo 端点获取信息时发生错误（非致命）", e);
         }
     }
     
-    // =========================== 登出功能 ===========================
+    // =========================== JWT 用户信息获取 ===========================
     
     /**
-     * 生成单点登出 URL
+     * 从 JWT token 中获取用户信息
      * 
-     * 单点登出允许用户从所有相关应用程序中登出。
-     * 包含 id_token_hint 参数以指定要登出的用户会话。
-     * 
-     * @param userInfo 用户信息（包含 ID Token）
-     * @return 登出 URL
+     * @param jwtToken JWT token
+     * @return 用户信息对象，如果token无效返回null
      */
-    public String generateLogoutUrl(UserInfo userInfo) {
-        UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(keycloakConfig.getLogoutUrl())
-                .queryParam("post_logout_redirect_uri", keycloakConfig.getPostLogoutRedirectUri());
+    public UserInfo getUserInfoFromJwt(String jwtToken) {
+        try {
+            if (!jwtUtil.validateToken(jwtToken)) {
+                log.warn("JWT token 验证失败");
+                return null;
+            }
+            
+            Claims claims = jwtUtil.getClaimsFromToken(jwtToken);
+            if (claims == null) {
+                log.warn("无法从 JWT token 中获取 claims");
+                return null;
+            }
+            
+            // 构建 UserInfo 对象
+            Map<String, Object> userClaims = new HashMap<>();
+            userClaims.put("sub", claims.getSubject());
+            userClaims.put("email", claims.get("email"));
+            userClaims.put("name", claims.get("name"));
+            userClaims.put("preferred_username", claims.get("preferred_username"));
+            userClaims.put("session_state", claims.get("session_state"));
+            
+            UserInfo userInfo = new UserInfo(userClaims);
+            
+            // 设置原始的 Keycloak ID Token（用于登出）
+            String keycloakIdToken = (String) claims.get("keycloak_id_token");
+            if (keycloakIdToken != null) {
+                userInfo.setIdToken(keycloakIdToken);
+            }
+            
+            return userInfo;
+            
+        } catch (Exception e) {
+            log.error("从 JWT token 获取用户信息失败", e);
+            return null;
+        }
+    }
+    
+    // =========================== 登出功能（已简化） ===========================
+    
+    // 注意：由于使用JWT无状态认证，不需要服务端登出逻辑
+    // 客户端只需要删除本地存储的JWT token即可
+    
+    /**
+     * 定时清理过期的 state 参数
+     * 每5分钟执行一次
+     */
+    @Scheduled(fixedRate = 5 * 60 * 1000) // 5分钟
+    public void cleanupExpiredStates() {
+        long currentTime = System.currentTimeMillis();
+        Iterator<Map.Entry<String, Long>> iterator = stateCreationTimeMap.entrySet().iterator();
+        int cleanedCount = 0;
         
-        // 如果有用户信息且包含 ID Token，则添加 id_token_hint 参数
-        if (userInfo != null && userInfo.getIdToken() != null) {
-            builder.queryParam("id_token_hint", userInfo.getIdToken());
-            logger.debug("添加 id_token_hint 参数到登出 URL");
-        } else {
-            logger.warn("缺少 ID Token，无法添加 id_token_hint 参数");
+        while (iterator.hasNext()) {
+            Map.Entry<String, Long> entry = iterator.next();
+            String state = entry.getKey();
+            Long creationTime = entry.getValue();
+            
+            if (currentTime - creationTime > STATE_EXPIRATION_TIME) {
+                // 清理过期的 state
+                iterator.remove();
+                stateToCodeVerifierMap.remove(state);
+                cleanedCount++;
+            }
         }
         
-        String logoutUrl = builder.build().toUriString();
-        
-        logger.info("生成登出 URL: {}", logoutUrl);
-        return logoutUrl;
+        if (cleanedCount > 0) {
+            log.info("清理了 {} 个过期的 state 参数", cleanedCount);
+        }
     }
     
     // =========================== 辅助方法 ===========================
     
     /**
-     * 生成JWT格式的state参数
+     * 生成随机的 PKCE code verifier
      * 
-     * 将codeVerifier和时间戳信息编码到JWT中，避免在多pod环境中使用共享存储
-     * 
-     * @param codeVerifier PKCE code verifier
-     * @return JWT格式的state字符串
+     * @return code verifier 字符串
      */
-    private String generateJwtState(String codeVerifier) {
-        try {
-            Key key = Keys.hmacShaKeyFor(JWT_SECRET.getBytes(StandardCharsets.UTF_8));
-            
-            long currentTime = System.currentTimeMillis();
-            String randomNonce = generateRandomString(16);
-            
-            return Jwts.builder()
-                    .setIssuer("aegis-demo")
-                    .setSubject("oauth-state")
-                    .setIssuedAt(new java.util.Date(currentTime))
-                    .setExpiration(new java.util.Date(currentTime + 600000)) // 10分钟过期
-                    .claim("codeVerifier", codeVerifier)
-                    .claim("nonce", randomNonce)
-                    .signWith(key)
-                    .compact();
-        } catch (Exception e) {
-            logger.error("生成JWT state失败", e);
-            throw new RuntimeException("生成state参数失败", e);
-        }
+    private String generateCodeVerifier() {
+        SecureRandom secureRandom = new SecureRandom();
+        byte[] codeVerifier = new byte[32];
+        secureRandom.nextBytes(codeVerifier);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(codeVerifier);
     }
     
     /**
-     * 验证JWT格式的state参数并提取codeVerifier
-     * 
-     * @param jwtState JWT格式的state参数
-     * @return codeVerifier
-     * @throws RuntimeException 如果state无效或过期
-     */
-    private String validateJwtStateAndExtractCodeVerifier(String jwtState) {
-        if (jwtState == null || jwtState.trim().isEmpty()) {
-            throw new RuntimeException("State参数为空");
-        }
-        
-        try {
-            Key key = Keys.hmacShaKeyFor(JWT_SECRET.getBytes(StandardCharsets.UTF_8));
-            
-            Claims claims = Jwts.parserBuilder()
-                    .setSigningKey(key)
-                    .requireIssuer("aegis-demo")
-                    .requireSubject("oauth-state")
-                    .build()
-                    .parseClaimsJws(jwtState)
-                    .getBody();
-            
-            // 检查是否过期
-            if (claims.getExpiration().before(new java.util.Date())) {
-                throw new RuntimeException("State参数已过期");
-            }
-            
-            // 提取codeVerifier
-            String codeVerifier = claims.get("codeVerifier", String.class);
-            if (codeVerifier == null || codeVerifier.trim().isEmpty()) {
-                throw new RuntimeException("State参数中缺少codeVerifier");
-            }
-            
-            logger.debug("成功验证JWT state，签发时间: {}, 过期时间: {}", 
-                        claims.getIssuedAt(), claims.getExpiration());
-            
-            return codeVerifier;
-            
-        } catch (io.jsonwebtoken.ExpiredJwtException e) {
-            throw new RuntimeException("State参数已过期，请重新开始登录流程");
-        } catch (io.jsonwebtoken.MalformedJwtException e) {
-            throw new RuntimeException("State参数格式错误");
-        } catch (io.jsonwebtoken.security.SignatureException e) {
-            throw new RuntimeException("State参数签名验证失败，可能存在安全风险");
-        } catch (Exception e) {
-            logger.error("验证JWT state时发生错误: {}", e.getMessage());
-            throw new RuntimeException("State参数验证失败: " + e.getMessage());
-        }
-    }
-
-    /**
-     * 生成随机字符串
-     * 
-     * @param length 字符串长度
-     * @return 随机字符串
-     */
-    private String generateRandomString(int length) {
-        SecureRandom random = new SecureRandom();
-        byte[] bytes = new byte[length];
-        random.nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-    }
-    
-    /**
-     * 生成 PKCE code challenge
+     * 根据 code verifier 生成 code challenge
      * 
      * @param codeVerifier code verifier
-     * @return code challenge
+     * @return code challenge 字符串
      */
     private String generateCodeChallenge(String codeVerifier) {
         try {
-            byte[] bytes = codeVerifier.getBytes(StandardCharsets.UTF_8);
-            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(bytes);
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(codeVerifier.getBytes(StandardCharsets.UTF_8));
             return Base64.getUrlEncoder().withoutPadding().encodeToString(hash);
         } catch (Exception e) {
-            throw new RuntimeException("生成 code challenge 失败", e);
+            throw new RuntimeException("生成 PKCE code challenge 失败", e);
         }
     }
+    
+    /**
+     * 生成随机的 state 参数
+     * 
+     * @return state 字符串
+     */
+    private String generateState() {
+        SecureRandom secureRandom = new SecureRandom();
+        byte[] state = new byte[16];
+        secureRandom.nextBytes(state);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(state);
+    }
+
+    
     
     // =========================== 生产环境注意事项 ===========================
     

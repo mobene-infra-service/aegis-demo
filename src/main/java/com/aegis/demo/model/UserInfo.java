@@ -1,6 +1,7 @@
 package com.aegis.demo.model;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Data;
 
 import java.time.Instant;
 import java.util.List;
@@ -17,6 +18,7 @@ import java.util.Map;
  * 2. 存储从 UserInfo 端点获取的用户详细信息
  * 3. 提供统一的用户信息访问接口
  */
+@Data
 public class UserInfo {
     
     // =========================== OIDC 标准字段 ===========================
@@ -225,160 +227,5 @@ public class UserInfo {
         return Math.max(0, remaining);
     }
     
-    // =========================== Getter/Setter 方法 ===========================
-    
-    public String getSubject() {
-        return subject;
-    }
-    
-    public void setSubject(String subject) {
-        this.subject = subject;
-    }
-    
-    public String getPreferredUsername() {
-        return preferredUsername;
-    }
-    
-    public void setPreferredUsername(String preferredUsername) {
-        this.preferredUsername = preferredUsername;
-    }
-    
-    public String getEmail() {
-        return email;
-    }
-    
-    public void setEmail(String email) {
-        this.email = email;
-    }
-    
-    public Boolean getEmailVerified() {
-        return emailVerified;
-    }
-    
-    public void setEmailVerified(Boolean emailVerified) {
-        this.emailVerified = emailVerified;
-    }
-    
-    public String getName() {
-        return name;
-    }
-    
-    public void setName(String name) {
-        this.name = name;
-    }
-    
-    public String getGivenName() {
-        return givenName;
-    }
-    
-    public void setGivenName(String givenName) {
-        this.givenName = givenName;
-    }
-    
-    public String getFamilyName() {
-        return familyName;
-    }
-    
-    public void setFamilyName(String familyName) {
-        this.familyName = familyName;
-    }
-    
-    public String getIssuer() {
-        return issuer;
-    }
-    
-    public void setIssuer(String issuer) {
-        this.issuer = issuer;
-    }
-    
-    public String getAudience() {
-        return audience;
-    }
-    
-    public void setAudience(String audience) {
-        this.audience = audience;
-    }
-    
-    public Long getIssuedAt() {
-        return issuedAt;
-    }
-    
-    public void setIssuedAt(Long issuedAt) {
-        this.issuedAt = issuedAt;
-    }
-    
-    public Long getExpiresAt() {
-        return expiresAt;
-    }
-    
-    public void setExpiresAt(Long expiresAt) {
-        this.expiresAt = expiresAt;
-    }
-    
-    public String getSessionState() {
-        return sessionState;
-    }
-    
-    public void setSessionState(String sessionState) {
-        this.sessionState = sessionState;
-    }
-    
-    public List<String> getRoles() {
-        return roles;
-    }
-    
-    public void setRoles(List<String> roles) {
-        this.roles = roles;
-    }
-    
-    public List<String> getPermissions() {
-        return permissions;
-    }
-    
-    public void setPermissions(List<String> permissions) {
-        this.permissions = permissions;
-    }
-    
-    public Map<String, Object> getResourceAccess() {
-        return resourceAccess;
-    }
-    
-    public void setResourceAccess(Map<String, Object> resourceAccess) {
-        this.resourceAccess = resourceAccess;
-    }
-    
-    public Map<String, Object> getRealmAccess() {
-        return realmAccess;
-    }
-    
-    public void setRealmAccess(Map<String, Object> realmAccess) {
-        this.realmAccess = realmAccess;
-    }
-    
-    public String getIdToken() {
-        return idToken;
-    }
-    
-    public void setIdToken(String idToken) {
-        this.idToken = idToken;
-    }
-    
-    public Map<String, Object> getAllClaims() {
-        return allClaims;
-    }
-    
-    public void setAllClaims(Map<String, Object> allClaims) {
-        this.allClaims = allClaims;
-    }
-    
-    @Override
-    public String toString() {
-        return "UserInfo{" +
-                "subject='" + subject + '\'' +
-                ", preferredUsername='" + preferredUsername + '\'' +
-                ", email='" + email + '\'' +
-                ", name='" + name + '\'' +
-                ", isTokenExpired=" + isTokenExpired() +
-                '}';
-    }
+
 }
