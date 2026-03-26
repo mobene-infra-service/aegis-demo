@@ -5,7 +5,7 @@ keycloak:
   server:
     url: https://sso.authlattice.com
   # Realm 名称
-  realm: jingle
+  realm: sso
   # OAuth2 客户端配置
   client:
     id: aegis-demo
