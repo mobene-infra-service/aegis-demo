@@ -3,7 +3,7 @@
 keycloak:
   # Keycloak 服务器基础 URL
   server:
-    url: https://sso-auth.jinguobyte.com
+    url: https://sso.authlattice.com
   # Realm 名称
   realm: jingle
   # OAuth2 客户端配置

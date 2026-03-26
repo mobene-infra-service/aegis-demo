@@ -18,7 +18,7 @@ RUN mvn -B clean package -Dmaven.test.skip=true
 ####################################
 # 第二阶段：仅保留运行所需的 JAR 包 #
 ####################################
-FROM openjdk:17-jdk-bullseye
+FROM eclipse-temurin:17-jdk
 
 # 时区设置，避免容器时间不一致
 ENV TZ=Asia/Shanghai
